@@ -435,8 +435,14 @@ class ItemsController extends ApiController {
 						$this->e404("Item not found");
 					}
 					
-					if ($item->isAttachment() && !$item->isPDFAttachment()) {
-						$this->e400("/children cannot be called on non-PDF attachments");
+					if ($item->isAttachment()) {
+						$this->e400("/children cannot be called on attachment items");
+					}
+					if ($item->isNote()) {
+						$this->e400("/children cannot be called on note items");
+					}
+					if ($item->getSource()) {
+						$this->e400("/children cannot be called on child items");
 					}
 					
 					// Create new child items
@@ -490,17 +496,9 @@ class ItemsController extends ApiController {
 					// Display items
 					else {
 						$title = "Child Items of ‘" . $item->getDisplayTitle() . "’";
-						if ($item->isAttachment()) {
-							$itemIDs = $item->getAnnotations();
-						}
-						else if ($item->isNote()) {
-							$itemIDs = $item->getAttachments();
-						}
-						else {
-							$notes = $item->getNotes();
-							$attachments = $item->getAttachments();
-							$itemIDs = array_merge($notes, $attachments);
-						}
+						$notes = $item->getNotes();
+						$attachments = $item->getAttachments();
+						$itemIDs = array_merge($notes, $attachments);
 					}
 				}
 				// All items
@@ -760,26 +758,12 @@ class ItemsController extends ApiController {
 				$this->e404();
 			}
 			
-			// Return 404 to non-members for files in PublicClosed groups
-			// TODO: Move this into Permissions
-			$type = Zotero_Libraries::getType($this->objectLibraryID);
-			if ($type == 'group') {
-				$groupID = Zotero_Groups::getGroupIDFromLibraryID($this->objectLibraryID);
-				$group = Zotero_Groups::get($groupID);
-				if ($group->type == 'PublicClosed'
-						&& !$this->permissions->canAccess($this->objectLibraryID, 'files')) {
-					$this->e404();
-				}
-			}
-			
 			// File viewing
 			if ($this->fileView || $this->fileViewURL) {
-				
 				$url = Zotero_Attachments::getTemporaryURL($item);
 				if (!$url) {
 					$this->e500();
 				}
-				
 				if ($this->fileViewURL) {
 					header('Content-Type: text/plain');
 					echo $url . "\n";
@@ -803,6 +787,12 @@ class ItemsController extends ApiController {
 			header("Zotero-File-Compressed: " . ($info['zip'] ? 'Yes' : 'No'));
 			
 			StatsD::increment("storage.download", 1);
+			Zotero_Storage::logDownload(
+				$item,
+				// TODO: support anonymous download if necessary
+				$this->userID,
+				IPAddress::getIP()
+			);
 			$this->redirect($url);
 			exit;
 		}
@@ -922,13 +912,13 @@ class ItemsController extends ApiController {
 					$this->e400("Files above 4 GB are not currently supported");
 				}
 				
-				$info->contentType = $_REQUEST['contentType'] ?? null;
-				if ($info->contentType && !preg_match("/^[a-zA-Z0-9\-\/]+$/", $info->contentType)) {
+				$info->contentType = isset($_REQUEST['contentType']) ? $_REQUEST['contentType'] : null;
+				if (!preg_match("/^[a-zA-Z0-9\-\/]+$/", $info->contentType)) {
 					$info->contentType = null;
 				}
 				
-				$info->charset = $_REQUEST['charset'] ?? null;
-				if ($info->charset && !preg_match("/^[a-zA-Z0-9\-]+$/", $info->charset)) {
+				$info->charset = isset($_REQUEST['charset']) ? $_REQUEST['charset'] : null;
+				if (!preg_match("/^[a-zA-Z0-9\-]+$/", $info->charset)) {
 					$info->charset = null;
 				}
 				
@@ -1124,7 +1114,8 @@ class ItemsController extends ApiController {
 					}
 				}
 				Zotero_Storage::updateFileItemInfo($item, $storageFileID, $info);
-				Zotero_Storage::markUploadAsCompleted($uploadKey);
+				
+				Zotero_Storage::logUpload($this->userID, $item, $uploadKey, IPAddress::getIP());
 				
 				Zotero_DB::commit();
 				
@@ -1177,7 +1168,8 @@ class ItemsController extends ApiController {
 				}
 				
 				Zotero_Storage::updateFileItemInfo($item, $storageFileID, $info, true);
-				Zotero_Storage::markUploadAsCompleted($uploadKey);
+				
+				Zotero_Storage::logUpload($this->userID, $item, $uploadKey, IPAddress::getIP());
 				
 				Zotero_DB::commit();
 				

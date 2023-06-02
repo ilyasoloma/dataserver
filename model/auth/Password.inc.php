@@ -29,7 +29,7 @@ class Zotero_AuthenticationPlugin_Password implements Zotero_AuthenticationPlugi
 		$salt = Z_CONFIG::$AUTH_SALT;
 		
 		// TODO: config
-		$dev = Z_ENV_TESTING_SITE ? "_dev" : "";
+		$dev = Z_ENV_TESTING_SITE ? "_test" : "";
 		$databaseName = "zotero_www{$dev}";
 		
 		$username = $data['username'];

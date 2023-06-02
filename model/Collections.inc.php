@@ -43,7 +43,7 @@ class Zotero_Collections {
 	
 	public static $maxLength = 255;
 	
-	public static function search($libraryID, bool $onlyTopLevel, $params) {
+	public static function search($libraryID, $onlyTopLevel=false, $params) {
 		$results = array('results' => array(), 'total' => 0);
 		
 		$shardID = Zotero_Shards::getByLibraryID($libraryID);

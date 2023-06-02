@@ -633,7 +633,7 @@ class Zotero_Collection extends Zotero_DataObject {
 	}
 	
 	
-	public function toResponseJSON(array $requestParams) {
+	public function toResponseJSON($requestParams=[]) {
 		$t = microtime(true);
 		
 		$libraryData = Zotero_Libraries::toJSON($this->libraryID);

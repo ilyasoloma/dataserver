@@ -179,6 +179,35 @@ class Zotero_Storage {
 		}
 	}
 	
+	public static function logDownload($item, $downloadUserID, $ipAddress) {
+		$libraryID = $item->libraryID;
+		$ownerUserID = Zotero_Libraries::getOwner($libraryID);
+		
+		$info = self::getLocalFileItemInfo($item);
+		$storageFileID = $info['storageFileID'];
+		$filename = $info['filename'];
+		$size = $info['size'];
+		
+		$sql = "INSERT INTO storageDownloadLog
+				(ownerUserID, downloadUserID, ipAddress, storageFileID, filename, size)
+				VALUES (?, ?, INET_ATON(?), ?, ?, ?)";
+		Zotero_DB::query(
+			$sql,
+			[
+				$ownerUserID,
+				$downloadUserID,
+				$ipAddress,
+				$storageFileID,
+				$filename,
+				$size
+			],
+			0,
+			[
+				'writeInReadMode' => true
+			]
+		);
+	}
+	
 	
 	public static function uploadFile(Zotero_StorageFileInfo $info, $file, $contentType) {
 		if (!file_exists($file)) {
@@ -249,14 +278,32 @@ class Zotero_Storage {
 	}
 	
 	
-	public static function markUploadAsCompleted($key) {
+	public static function logUpload($uploadUserID, $item, $key, $ipAddress) {
+		$libraryID = $item->libraryID;
+		$ownerUserID = Zotero_Libraries::getOwner($libraryID);
+		
+		$info = self::getUploadInfo($key);
+		if (!$info) {
+			throw new Exception("Upload key '$key' not found in queue");
+		}
+		
+		$info = self::getLocalFileItemInfo($item);
+		$storageFileID = $info['storageFileID'];
+		$filename = $info['filename'];
+		$size = $info['size'];
+		
 		$sql = "DELETE FROM storageUploadQueue WHERE uploadKey=?";
 		Zotero_DB::query($sql, $key);
+		
+		$sql = "INSERT INTO storageUploadLog
+				(ownerUserID, uploadUserID, ipAddress, storageFileID, filename, size)
+				VALUES (?, ?, INET_ATON(?), ?, ?, ?)";
+		Zotero_DB::query($sql, array($ownerUserID, $uploadUserID, $ipAddress, $storageFileID, $filename, $size));
 	}
 	
 	
 	public static function getUploadBaseURL() {
-		return "https://" . Z_CONFIG::$S3_BUCKET . ".s3.amazonaws.com/";
+		return "http://" . Z_CONFIG::$S3_ENDPOINT . "/" . Z_CONFIG::$S3_BUCKET . "/";
 	}
 	
 	
@@ -564,13 +611,16 @@ class Zotero_Storage {
 		$item->save();
 		
 		// Note: We set the size on the shard so that usage queries are instantaneous
-		$sql = "INSERT INTO storageFileItems (storageFileID, itemID, mtime, size) VALUES (?,?,?,?) AS new
-				ON DUPLICATE KEY UPDATE storageFileID=new.storageFileID, mtime=new.mtime, size=new.size";
+		$sql = "INSERT INTO storageFileItems (storageFileID, itemID, mtime, size) VALUES (?,?,?,?)
+				ON DUPLICATE KEY UPDATE storageFileID=?, mtime=?, size=?";
 		Zotero_DB::query(
 			$sql,
 			[
 				$storageFileID,
 				$item->id,
+				$info->mtime,
+				$info->size,
+				$storageFileID,
 				$info->mtime,
 				$info->size
 			],
@@ -639,8 +689,8 @@ class Zotero_Storage {
 				. "Content-Disposition: form-data; name=\"$key\"\r\n\r\n"
 				. $val . "\r\n";
 		}
-		$prefix .= "--$boundary\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\n";
-		
+		//$prefix .= "--$boundary\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\n";
+		$prefix .= "--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" . $info->filename ."\"\r\n\r\n";
 		// Suffix
 		$suffix = "\r\n--$boundary--";
 		
@@ -819,7 +869,7 @@ class Zotero_Storage {
 		// Allow usage a bit above the quota, to account for upload race conditions that result in
 		// a last file going above the quota
 		$leeway = 10;
-		if (($current['quota'] ?? 0) != $quota && ($quota + $leeway) < $usage['total']) {
+		if ($current['quota'] != $quota && ($quota + $leeway) < $usage['total']) {
 			throw new Exception("Cannot set quota below current usage", Z_ERROR_GROUP_QUOTA_SET_BELOW_USAGE);
 		}
 		
@@ -837,7 +887,7 @@ class Zotero_Storage {
 	
 	public static function getInstitutionalUserQuota($userID) {
 		// TODO: config
-		$dev = Z_ENV_TESTING_SITE ? "_dev" : "";
+		$dev = Z_ENV_TESTING_SITE ? "_test" : "";
 		$databaseName = "zotero_www{$dev}";
 		
 		// Get maximum institutional quota by e-mail domain
@@ -915,7 +965,8 @@ class Zotero_Storage {
 		$usage = [];
 		$libraryID = Zotero_Users::getLibraryIDFromUserID($userID);
 		
-		$sql = "SELECT storageUsage FROM shardLibraries WHERE libraryID=?";
+		$sql = "SELECT SUM(size) AS bytes FROM storageFileItems "
+				. "JOIN items USING (itemID) WHERE libraryID=?";
 		$libraryBytes = Zotero_DB::valueQuery($sql, $libraryID, Zotero_Shards::getByLibraryID($libraryID));
 		$usage['library'] = $libraryBytes;
 		
@@ -927,10 +978,11 @@ class Zotero_Storage {
 			$shardIDs = Zotero_Groups::getUserGroupShards($userID);
 			
 			foreach ($shardIDs as $shardID) {
-				$sql = "SELECT libraryID, storageUsage AS `bytes` FROM shardLibraries
-					WHERE libraryID IN
-					(" . implode(', ', array_fill(0, sizeOf($ownedLibraries), '?')) . ")
-					GROUP BY libraryID WITH ROLLUP";
+				$sql = "SELECT libraryID, SUM(size) AS `bytes` FROM storageFileItems
+						JOIN items I USING (itemID)
+						WHERE libraryID IN
+						(" . implode(', ', array_fill(0, sizeOf($ownedLibraries), '?')) . ")
+						GROUP BY libraryID WITH ROLLUP";
 				$libraries = Zotero_DB::query($sql, $ownedLibraries, $shardID);
 				if ($libraries) {
 					foreach ($libraries as $library) {
@@ -951,7 +1003,7 @@ class Zotero_Storage {
 		
 		$usage['total'] = $libraryBytes + $groupBytes;
 		
-		Z_Core::$MC->set($cacheKey, $usage, 1200);
+		Z_Core::$MC->set($cacheKey, $usage, 600);
 		
 		$usage = self::usageToUnit($usage, $unit);
 		return $usage;
@@ -988,9 +1040,9 @@ class Zotero_Storage {
 		return $usage;
 	}
 	
-	
+	/*
 	private static function getHash($stringToSign) {
 		return base64_encode(hash_hmac('sha1', $stringToSign, Z_CONFIG::$AWS_SECRET_KEY, true));
-	}
+	}*/
 }
 ?>

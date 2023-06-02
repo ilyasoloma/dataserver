@@ -641,11 +641,6 @@ class Zotero_Group {
 			Zotero_Notifier::trigger('add', 'apikey-library', array_map(function ($key) {
 				return $key->id . "-" . $this->libraryID;
 			}, $apiKeys));
-			
-			if ($currentOwner) {
-				Zotero_Storage::clearUserUsage($currentOwner);
-			}
-			Zotero_Storage::clearUserUsage($newOwner);
 		}
 		
 		Zotero_DB::commit();
@@ -1031,9 +1026,6 @@ class Zotero_Group {
 		$userXML = new SimpleXMLElement(
 			'<user xmlns="' . Zotero_Atom::$nsZoteroTransfer . '"/>'
 		);
-		$userXML['id'] = $userID;
-		$userXML['role'] = $groupUserData['role'];
-		
 		// This method of adding the element seems to be necessary to get the
 		// namespace prefix to show up
 		$fNode = dom_import_simplexml($xml->content);
@@ -1041,8 +1033,8 @@ class Zotero_Group {
 		$importedNode = $fNode->ownerDocument->importNode($subNode, true);
 		$fNode->appendChild($importedNode);
 		
-		//$xml->content->user['id'] = $userID;
-		//$xml->content->user['role'] = $groupUserData['role'];
+		$xml->content->user['id'] = $userID;
+		$xml->content->user['role'] = $groupUserData['role'];
 		
 		return $xml;
 	}

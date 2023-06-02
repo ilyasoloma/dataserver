@@ -50,12 +50,11 @@ class Z_Core {
 	}
 	
 	/**
-	 * Log errors and save an error report to disk and/or S3 with optional additional text
+	 * Log errors and save an error report to disk with optional additional text
 	 */
 	public static function reportErrors($errors, $text = '') {
 		try {
 			$write = !Z_ENV_TESTING_SITE && !empty(Z_CONFIG::$ERROR_PATH);
-			$upload = !Z_ENV_TESTING_SITE && !empty(Z_CONFIG::$S3_BUCKET_ERRORS);
 			$id = substr(md5(uniqid(rand(), true)), 0, 10);
 			$logStr = "";
 			$fileStr = date("D M j G:i:s T Y") . "\n";
@@ -78,7 +77,7 @@ class Z_Core {
 					$e->getMessage()
 						. ' in ' . $e->getFile() . ':' . $e->getLine()
 						. ($logStr ? ' (' . $logStr . ')' : '')
-						. (($write || $upload) ? " ($id)" : '')
+						. ($write ? " ($id)" : '')
 				);
 				
 				// And add to report
@@ -88,18 +87,8 @@ class Z_Core {
 				$fileStr .= $text . "\n";
 			}
 			
-			// Write to file
 			if ($write) {
 				file_put_contents(Z_CONFIG::$ERROR_PATH . $id, $fileStr);
-			}
-			// Upload to S3
-			if ($upload) {
-				$s3Client = Z_Core::$AWS->createS3();
-				$s3Client->putObject([
-					'Body' => $fileStr,
-					'Bucket' => Z_CONFIG::$S3_BUCKET_ERRORS,
-					'Key' => $id
-				]);
 			}
 		}
 		catch (Exception $e) {

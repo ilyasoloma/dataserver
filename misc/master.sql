@@ -86,7 +86,7 @@ CREATE TABLE `groups` (
   `libraryEditing` enum('admins','members') NOT NULL DEFAULT 'admins',
   `libraryReading` enum('members','all') NOT NULL DEFAULT 'all',
   `fileEditing` enum('none','admins','members') NOT NULL DEFAULT 'admins',
-  `description` text CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  `description` text NOT NULL,
   `url` varchar(255) NOT NULL,
   `hasImage` tinyint(1) unsigned NOT NULL DEFAULT '0',
   `dateAdded` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -238,6 +238,18 @@ CREATE TABLE `storageAccounts` (
 
 
 
+CREATE TABLE `storageDownloadLog` (
+  `ownerUserID` int(10) unsigned NOT NULL,
+  `downloadUserID` int(10) unsigned DEFAULT NULL,
+  `ipAddress` int(10) unsigned NULL,
+  `storageFileID` int(10) unsigned NOT NULL,
+  `filename` varchar(1024) NOT NULL,
+  `size` int(10) unsigned NOT NULL,
+  `time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+
+
 CREATE TABLE `storageFiles` (
   `storageFileID` int(10) unsigned NOT NULL AUTO_INCREMENT,
   `hash` char(32) NOT NULL,
@@ -275,6 +287,18 @@ CREATE TABLE `storageLastSync` (
 
 
 
+CREATE TABLE `storageUploadLog` (
+  `ownerUserID` int(10) unsigned NOT NULL,
+  `uploadUserID` int(10) unsigned NOT NULL,
+  `ipAddress` int(10) unsigned NULL,
+  `storageFileID` int(10) unsigned NOT NULL,
+  `filename` varchar(1024) NOT NULL,
+  `size` int(10) unsigned NOT NULL,
+  `time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+
+
 CREATE TABLE `storageUploadQueue` (
   `uploadKey` char(32) NOT NULL,
   `userID` int(10) unsigned NOT NULL,
@@ -289,8 +313,7 @@ CREATE TABLE `storageUploadQueue` (
   `charset` varchar(25) DEFAULT NULL,
   `time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`uploadKey`),
-  KEY `userID` (`userID`),
-  KEY `time` (`time`)
+  KEY `userID` (`userID`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
 

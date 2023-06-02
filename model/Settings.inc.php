@@ -25,13 +25,12 @@
 */
 
 class Zotero_Settings extends Zotero_ClassicDataObjects {
-	public static $MAX_VALUE_LENGTH = 30000;
+	public static $MAX_VALUE_LENGTH = 25000;
 	
 	public static $allowedSettings = [
 		'feeds',
 		'tagColors',
-		'/^lastPageIndex_(u|g[0-9]+)_[A-Z0-9]{8}$/',
-		'/^lastRead_(g[0-9]+)_[A-Z0-9]{8}$/'
+		'/^lastPageIndex_(u|g[0-9]+)_[A-Z0-9]{8}$/'
 	];
 	
 	protected static $ZDO_object = 'setting';
@@ -230,7 +229,6 @@ class Zotero_Settings extends Zotero_ClassicDataObjects {
 		
 		// Integer settings
 		case 'lastPageIndex':
-		case 'lastRead':
 			if (!is_integer($value)) {
 				throw new Exception("'value' must be an integer", Z_ERROR_INVALID_INPUT);
 			}

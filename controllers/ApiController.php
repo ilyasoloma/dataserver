@@ -73,6 +73,11 @@ class ApiController extends Controller {
 	
 	public function init($extra) {
 		$this->startTime = microtime(true);
+		$this->uri = Z_CONFIG::$API_BASE_URI . substr($_SERVER["REQUEST_URI"], 1);
+		
+		if (!Z_CONFIG::$API_ENABLED) {
+			$this->e503(Z_CONFIG::$MAINTENANCE_MESSAGE);
+		}
 		
 		if (!empty(Z_CONFIG::$BACKOFF)) {
 			header("Backoff: " . Z_CONFIG::$BACKOFF);
@@ -104,8 +109,6 @@ class ApiController extends Controller {
 		register_shutdown_function(array($this, 'checkForFatalError'));
 		register_shutdown_function(array($this, 'addHeaders'));
 		$this->method = $_SERVER['REQUEST_METHOD'];
-		$this->uri = Z_CONFIG::$API_BASE_URI . substr($_SERVER["REQUEST_URI"], 1);
-		$this->path = $_SERVER["REQUEST_URI"];
 		
 		if (!in_array($this->method, array('HEAD', 'OPTIONS', 'GET', 'PUT', 'POST', 'DELETE', 'PATCH'))) {
 			$this->e501();
@@ -138,18 +141,14 @@ class ApiController extends Controller {
 			$this->end();
 		}
 		
-		if (isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] == 'sync.zotero.org') {
+		if ($_SERVER['HTTP_HOST'] == 'sync.zotero.org') {
 			if ($this->method == 'GET' || $this->method == 'POST') {
 				header("Content-Type: text/xml");
 				header("HTTP/1.1 400");
-				echo '<response><error code="UPGRADE_REQUIRED">Zotero 4 syncing is no longer supported. Please upgrade Zotero to continue syncing.</error></response>';
+				echo '<response><error code="UPGRADE_REQUIRED">Zotero 4 syncing is no longer supported. Please upgrade to Zotero 5 to continue syncing.</error></response>';
 				$this->end();
 			}
 			$this->e400("Invalid endpoint");
-		}
-		
-		if (!Z_CONFIG::$API_ENABLED) {
-			$this->e503(Z_CONFIG::$MAINTENANCE_MESSAGE);
 		}
 		
 		if ($this->isWriteMethod() && Z_CONFIG::$READ_ONLY) {
@@ -313,7 +312,6 @@ class ApiController extends Controller {
 		}
 		
 		// Request limiter needs initialized authentication parameters
-		$this->initRequestLimiter();
 		
 		// Get object user
 		if (isset($this->objectUserID)) {
@@ -378,16 +376,6 @@ class ApiController extends Controller {
 		$this->isLegacySchemaClient = false;
 		if (strpos($_SERVER['HTTP_X_ZOTERO_VERSION'] ?? '', '5.0') === 0) {
 			require_once '../model/ToolkitVersionComparator.inc.php';
-			
-			if (ToolkitVersionComparator::compare($_SERVER['HTTP_X_ZOTERO_VERSION'], "5.0.78" ) < 0
-					// Allow /keys and /users/:userID/groups requests, since prefs didn't display
-					// proper error
-					&& strpos($this->path, '/keys') !== 0
-					&& !preg_match('%^/users/\d+/groups%', $this->path)) {
-				$this->e400("This version of Zotero is too old to sync. Please upgrade to a "
-					. "current version to continue syncing.", Z_ERROR_INVALID_INPUT);
-			}
-			
 			$this->isLegacySchemaClient = ToolkitVersionComparator::compare(
 				$_SERVER['HTTP_X_ZOTERO_VERSION'], "5.0.78"
 			) < 0;
@@ -487,14 +475,10 @@ class ApiController extends Controller {
 		
 		$this->apiVersion = $version = $this->queryParams['v'];
 		
-		if ($this->objectLibraryID) {
-			Zotero_DB::close();
-		}
-		
 		header("Zotero-API-Version: " . $version);
 		StatsD::increment("api.request.version.v" . $version, 0.25);
 		
-		header("Zotero-Schema-Version: " . \Zotero\Schema::getVersion());
+		header("Zotero-Schema-Version: " . self::getSchemaVersion());
 	}
 	
 	
@@ -506,6 +490,20 @@ class ApiController extends Controller {
 	public function noop() {
 		echo "Nothing to see here.";
 		exit;
+	}
+	
+	
+	public function getSchemaVersion() {
+		$cacheKey = "schemaVersion";
+		$version = Z_Core::$MC->get($cacheKey);
+		if ($version) {
+			return $version;
+		}
+		$version = json_decode(
+			file_get_contents(Z_ENV_BASE_PATH . 'htdocs/zotero-schema/schema.json')
+		)->version;
+		Z_Core::$MC->set($cacheKey, $version, 60);
+		return $version;
 	}
 	
 	
@@ -616,116 +614,6 @@ class ApiController extends Controller {
 	// Protected methods
 	//
 
-	protected function initRequestLimiter() {
-		$limits = $this->limits();
-		
-		// Skip request limiter if controller 'limits' functions doesn't return anything
-		if (empty($limits)) {
-			return;
-		}
-		
-		// Skip if neither rate nor concurrency limit isn't set
-		if (empty($limits['rate']) && empty($limits['concurrency'])) {
-			return;
-		}
-		
-		// Skip if logOnly parameter isn't set
-		// (other parameters are checked in Z_RequestLimiter)
-		if (!empty($limits['rate']) && !isset($limits['rate']['logOnly']) ||
-			!empty($limits['concurrency']) && !isset($limits['concurrency']['logOnly'])) {
-			Z_Core::logError('Warning: Missing logOnly parameter, skipping request limiter');
-			return;
-		}
-		
-		// Skip if failed to initialize (i.e. Redis error)
-		if (!Z_RequestLimiter::init()) return;
-		
-		// Initialize rate limiter
-		if (!empty($limits['rate'])) {
-			if (Z_RequestLimiter::checkBucketRate($limits['rate']) === false) {
-				StatsD::increment('api.request.limit.rate.rejected', 1);
-				Z_Core::logError(($limits['rate']['logOnly'] ? '(WARN) ' : '')
-					. 'Request rate limit exceeded for ' . $limits['rate']['bucket']
-					. ' for ' . $this->method . ' to ' . $_SERVER['REQUEST_URI']);
-				if (!$limits['rate']['logOnly']) {
-					// Suggest to retry when the full capacity will be reached
-					header('Retry-After: ' . (int) $limits['rate']['capacity'] / $limits['rate']['replenishRate']);
-					$this->e429('Request rate limit exceeded');
-				}
-			}
-		}
-		
-		// Initialize concurrency limiter
-		if (!empty($limits['concurrency'])) {
-			if (Z_RequestLimiter::beginConcurrentRequest($limits['concurrency']) === false) {
-				StatsD::increment('api.request.limit.concurrency.rejected', 1);
-				Z_Core::logError(($limits['concurrency']['logOnly'] ? '(WARN) ' : '')
-					. 'Concurrent request limit exceeded for ' . $limits['concurrency']['bucket']
-					. ' for ' . $this->method . ' to ' . $_SERVER['REQUEST_URI']);
-				if (!$limits['concurrency']['logOnly']) {
-					// Randomize retry suggestion delay to spread future requests in a wider time interval
-					header('Retry-After: ' . rand(1, 30));
-					$this->e429('Concurrent request limit exceeded');
-				}
-			}
-		}
-	}
-	
-	/**
-	 * Override this function on other controllers
-	 * to set different request limits
-	 * @return array ['rate'=>[], 'concurrency'=>[]]
-	 */
-	protected function limits() {
-		$limits = [];
-		// Rate limit
-		// For authorized request
-		if (!empty($this->userID)) {
-			// 10 requests per second, 100 requests burst
-			$limits['rate'] = [
-				'logOnly' => false,
-				'bucket' => $this->userID . '_' . $_SERVER['REMOTE_ADDR'],
-				'capacity' => 100,
-				'replenishRate' => 10
-			];
-		}
-		// For anonymous request
-		else {
-			// 30 requests per second, no burst
-			$limits['rate'] = [
-				'logOnly' => false,
-				'bucket' => $_SERVER['REMOTE_ADDR'],
-				'capacity' => 30,
-				'replenishRate' => 30
-			];
-		}
-		
-		// Concurrency limit
-		// For authorized request
-		if (!empty($this->userID)) {
-			// 5 concurrent requests
-			$limits['concurrency'] = [
-				'logOnly' => false,
-				'bucket' => $this->userID,
-				'capacity' => 5,
-				// Maximum possible time the request can take
-				'ttl' => 60
-			];
-		}
-		// For anonymous request
-		else {
-			// 20 concurrent requests
-			$limits['concurrency'] = [
-				'logOnly' => false,
-				'bucket' => $_SERVER['REMOTE_ADDR'],
-				'capacity' => 20,
-				// Maximum possible time the request can take
-				'ttl' => 60
-			];
-		}
-		return $limits;
-	}
-	
 	protected function getFeedNamePrefix($libraryID=false) {
 		$prefix = "Zotero / ";
 		if ($libraryID) {
@@ -1105,7 +993,7 @@ class ApiController extends Controller {
 		}
 		
 		if (!empty($arguments[0])) {
-			echo htmlspecialchars($arguments[0], ENT_COMPAT);
+			echo htmlspecialchars($arguments[0]);
 		}
 		else {
 			// Default messages for some codes
@@ -1164,9 +1052,6 @@ class ApiController extends Controller {
 	
 	
 	protected function end() {
-		if (Z_RequestLimiter::isConcurrentRequestActive()) {
-			Z_RequestLimiter::finishConcurrentRequest();
-		}
 		
 		if ($this->profile && $this->currentRequestTime() > $this->timeLogThreshold) {
 			Zotero_DB::profileEnd($this->objectLibraryID, true, $this->uri);

@@ -40,10 +40,8 @@ class Zotero_Items {
 	];
 	
 	public static $maxDataValueLength = 65535;
-	public static $maxAnnotationTextLength = 7500;
-	public static $maxAnnotationPageLabelLength = 50;
+	public static $maxAnnotationTextLength = 25000;
 	public static $maxAnnotationPositionLength = 65535;
-	public static $defaultAnnotationColor = '#ffd400';
 	
 	/**
 	 *
@@ -1227,7 +1225,7 @@ class Zotero_Items {
 			}
 			
 			$val = $item->getField('date', true, true, true);
-			if (!is_null($val) && $val !== '') {
+			if ($val !== '') {
 				// TODO: Make sure all stored values are multipart strings
 				if (!Zotero_Date::isMultipart($val)) {
 					$val = Zotero_Date::strToMultipart($val);
@@ -1694,7 +1692,7 @@ class Zotero_Items {
 				case 'itemType':
 				case 'deleted':
 				case 'inPublications':
-					continue 2;
+					continue;
 				
 				case 'parentItem':
 					$item->setSourceKey($val);
@@ -1798,7 +1796,7 @@ class Zotero_Items {
 				case 'attachments':
 				case 'notes':
 					if (!$val) {
-						continue 2;
+						continue;
 					}
 					$twoStage = true;
 					break;
@@ -1829,14 +1827,14 @@ class Zotero_Items {
 				
 				case 'md5':
 					if (!$val) {
-						continue 2;
+						continue;
 					}
 					$item->attachmentStorageHash = $val;
 					break;
 					
 				case 'mtime':
 					if (!$val) {
-						continue 2;
+						continue;
 					}
 					$item->attachmentStorageModTime = $val;
 					break;
@@ -1908,7 +1906,7 @@ class Zotero_Items {
 				switch ($key) {
 					case 'attachments':
 						if (!$val) {
-							continue 2;
+							continue;
 						}
 						foreach ($val as $attachmentJSON) {
 							$childItem = new Zotero_Item;
@@ -1925,7 +1923,7 @@ class Zotero_Items {
 					
 					case 'notes':
 						if (!$val) {
-							continue 2;
+							continue;
 						}
 						$noteItemTypeID = Zotero_ItemTypes::getID("note");
 						
@@ -2059,18 +2057,8 @@ class Zotero_Items {
 					if ($apiVersion < 2) {
 						throw new Exception("Invalid property '$key'", Z_ERROR_INVALID_INPUT);
 					}
-					if ($val !== false) {
-						if (!Zotero_ID::isValidKey($val)) {
-							throw new Exception("'$key' must be a valid item key or false", Z_ERROR_INVALID_INPUT);
-						}
-						// Make sure 'key' != 'parentItem'
-						if (isset($json->key) && $val == $json->key) {
-							// Keep in sync with Zotero_Errors::parseException
-							throw new Exception(
-								"Item $libraryID/$val cannot be a child of itself",
-								Z_ERROR_ITEM_PARENT_SET_TO_SELF
-							);
-						}
+					if (!Zotero_ID::isValidKey($val) && $val !== false) {
+						throw new Exception("'$key' must be a valid item key or false", Z_ERROR_INVALID_INPUT);
 					}
 					break;
 				
@@ -2467,6 +2455,33 @@ class Zotero_Items {
 					break;
 				
 				case 'dateAdded':
+					if (!Zotero_Date::isSQLDateTime($val) && !Zotero_Date::isISO8601($val)) {
+						throw new Exception("'$key' must be in ISO 8601 or UTC 'YYYY-MM-DD hh:mm:ss' format", Z_ERROR_INVALID_INPUT);
+					}
+					
+					if (!$isNew) {
+						// Convert ISO date to SQL date for equality comparison
+						if (Zotero_Date::isISO8601($val)) {
+							$val = Zotero_Date::iso8601ToSQL($val);
+						}
+						// Don't allow dateAdded to change
+						if ($val != $item->$key && empty($json->relations->{Zotero_Relations::$deletedItemPredicate})) {
+							// If passed dateAdded is exactly one hour or one day off, assume it's from
+							// a DST bug we haven't yet tracked down
+							// (https://github.com/zotero/zotero/issues/1201) and ignore it
+							$absTimeDiff = abs(strtotime($val) - strtotime($item->$key));
+							if ($absTimeDiff == 3600 || $absTimeDiff == 86400
+									// Allow for Quick Start Guide items from <=4.0
+									|| $item->key == 'ABCD2345' || $item->key == 'ABCD3456') {
+								$json->$key = $item->$key;
+							}
+							else {
+								throw new Exception("'$key' cannot be modified for existing items", Z_ERROR_INVALID_INPUT);
+							}
+						}
+					}
+					break;
+				
 				case 'dateModified':
 					if (!Zotero_Date::isSQLDateTime($val) && !Zotero_Date::isISO8601($val)) {
 						throw new Exception("'$key' must be in ISO 8601 or UTC 'YYYY-MM-DD hh:mm:ss' format ($val)", Z_ERROR_INVALID_INPUT);

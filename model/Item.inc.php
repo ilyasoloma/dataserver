@@ -848,7 +848,7 @@ class Zotero_Item extends Zotero_DataObject {
 	
 	
 	public function isPDFAttachment() {
-		if (!$this->isFileAttachment()) return false;
+		if (!$this->isAttachment()) return false;
 		return $this->attachmentContentType == 'application/pdf';
 	}
 	
@@ -1060,11 +1060,6 @@ class Zotero_Item extends Zotero_DataObject {
 				$isNew = $env['isNew'] = true;
 				$sqlColumns = array();
 				$sqlValues = array();
-				
-				// Fail fast on missing parents, so we don't burn ids or do unnecessary work
-				if ($this->isAttachment() || $this->isNote() || $this->isAnnotation()) {
-					$this->getSource();
-				}
 				
 				//
 				// Primary fields
@@ -1385,6 +1380,11 @@ class Zotero_Item extends Zotero_DataObject {
 							VALUES (?,?,?,?,?,?,?,?)";
 					$isEmbeddedImage = $this->attachmentLinkMode == 'embedded_image';
 					
+					// TEMP
+					if ($isEmbeddedImage && Zotero_Libraries::getType($this->_libraryID) != 'user') {
+						throw new Exception("Can only add embedded-image attachment in user library");
+					}
+					
 					$parent = $this->getSource();
 					if ($parent) {
 						$parentItem = Zotero_Items::get($this->_libraryID, $parent);
@@ -1474,11 +1474,6 @@ class Zotero_Item extends Zotero_DataObject {
 						);
 					}
 					
-					// Default color to yellow if not specified
-					if (!$this->annotationColor) {
-						$this->annotationColor = Zotero_Items::$defaultAnnotationColor;
-					}
-					
 					$color = $this->annotationColor;
 					if ($color) {
 						// Strip '#' from hex color
@@ -1508,8 +1503,7 @@ class Zotero_Item extends Zotero_DataObject {
 				
 				// Sort fields
 				$sortTitle = Zotero_Items::getSortTitle($this->getDisplayTitle(true));
-				$title = $this->getField('title', false, true);
-				if (mb_substr($sortTitle ?? '', 0, 5) == mb_substr($title ?? '', 0, 5)) {
+				if (mb_substr($sortTitle, 0, 5) == mb_substr($this->getField('title', false, true), 0, 5)) {
 					$sortTitle = null;
 				}
 				$creatorSummary = $this->isRegularItem()
@@ -2051,8 +2045,7 @@ class Zotero_Item extends Zotero_DataObject {
 					$params = array();
 					
 					$sortTitle = Zotero_Items::getSortTitle($this->getDisplayTitle(true));
-					$title = $this->getField('title', false, true);
-					if (mb_substr($sortTitle ?? '', 0, 5) == mb_substr($title ?? '', 0, 5)) {
+					if (mb_substr($sortTitle, 0, 5) == mb_substr($this->getField('title', false, true), 0, 5)) {
 						$sortTitle = null;
 					}
 					$params[] = $sortTitle;
@@ -2519,7 +2512,7 @@ class Zotero_Item extends Zotero_DataObject {
 		if ($this->isNote()) {
 			return $this->numAttachments($includeTrashed);
 		}
-		if ($this->isPDFAttachment()) {
+		if ($this->isImportedAttachment()) {
 			return $this->numAnnotations($includeTrashed);
 		}
 		throw new Exception("Invalid item type");
@@ -3534,15 +3527,9 @@ class Zotero_Item extends Zotero_DataObject {
 					$val = '';
 				}
 				// Check annotationText length
-				if ($field == 'text') {
-					$val = mb_substr($val, 0, Zotero_Items::$maxAnnotationTextLength);
-				}
-				// Check annotationPageLabel length
-				if ($field == 'pageLabel' && strlen($val) > Zotero_Items::$maxAnnotationPageLabelLength) {
+				if ($field == 'text' && strlen($val) > Zotero_Items::$maxAnnotationTextLength) {
 					throw new Exception(
-						// TODO: Restore once output isn't HTML-encoded
-						//"Annotation page label '" . mb_substr($val, 0, 50) . "…' is too long",
-						"Annotation page label is too long for attachment " . $this->getSourceKey(),
+						"Annotation text '" . mb_substr($val, 0, 50) . "…' is too long",
 						// TEMP: Return 400 until client can handle a specified annotation item,
 						// either by selecting the parent attachment or displaying annotation items
 						// in the items list
@@ -3555,7 +3542,7 @@ class Zotero_Item extends Zotero_DataObject {
 					throw new Exception(
 						// TODO: Restore once output isn't HTML-encoded
 						//"Annotation position '" . mb_substr($val, 0, 50) . "…' is too long",
-						"Annotation position is too long for attachment " . $this->getSourceKey(),
+						"Annotation position is too long",
 						// TEMP: Return 400 until client can handle a specified annotation item,
 						// either by selecting the parent attachment or displaying annotation items
 						// in the items list
@@ -3829,7 +3816,7 @@ class Zotero_Item extends Zotero_DataObject {
 	}
 	
 	
-	public function toHTML(bool $asSimpleXML, $requestParams) {
+	public function toHTML($asSimpleXML = false, $requestParams) {
 		$html = new SimpleXMLElement('<table/>');
 		
 		/*
@@ -4090,7 +4077,7 @@ class Zotero_Item extends Zotero_DataObject {
 		else {
 			if ($this->isNote()
 					// Annotations depend on note permissions
-					|| ($this->isPDFAttachment() && $permissions->canAccess($this->libraryID, 'notes'))) {
+					|| ($this->isImportedAttachment() && $permissions->canAccess($this->libraryID, 'notes'))) {
 				$numChildren = $this->numChildren();
 			}
 			else {
@@ -4114,7 +4101,7 @@ class Zotero_Item extends Zotero_DataObject {
 	}
 	
 	
-	public function toResponseJSON(array $requestParams, Zotero_Permissions $permissions, $sharedData=null) {
+	public function toResponseJSON($requestParams=[], Zotero_Permissions $permissions, $sharedData=null) {
 		$t = microtime(true);
 		
 		if (!$this->loaded['primaryData']) {
@@ -4175,7 +4162,7 @@ class Zotero_Item extends Zotero_DataObject {
 		if (false && $cached) {
 			if ($isRegularItem
 					|| $this->isNote()
-					|| $this->isPDFAttachment()) {
+					|| $this->isImportedAttachment()) {
 				$cached['meta']->numChildren = $numChildren;
 			}
 			
@@ -4305,7 +4292,7 @@ class Zotero_Item extends Zotero_DataObject {
 		
 		if ($isRegularItem
 				|| $this->isNote()
-				|| $this->isPDFAttachment()) {
+				|| $this->isImportedAttachment()) {
 			$json['meta']->numChildren = $numChildren;
 		}
 		
@@ -4314,7 +4301,7 @@ class Zotero_Item extends Zotero_DataObject {
 		
 		foreach ($include as $type) {
 			if ($type == 'html') {
-				$json[$type] = trim($this->toHTML(false, $requestParams));
+				$json[$type] = trim($this->toHTML($requestParams));
 			}
 			else if ($type == 'citation') {
 				if (isset($sharedData[$type][$this->libraryID . "/" . $this->key])) {
@@ -4578,7 +4565,7 @@ class Zotero_Item extends Zotero_DataObject {
 				if ($tags) {
 					foreach ($tags as $tag) {
 						// Skip empty tags that are still in the database
-						if (trim($tag->name) === "") {
+						if (!trim($tag->name)) {
 							continue;
 						}
 						$t = array(
